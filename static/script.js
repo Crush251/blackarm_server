@@ -32,6 +32,7 @@ async function loadAllDevices() {
         createDevicePanels();
         updateStatus();
         loadAllSequencesForMerge(); // 加载所有序列到合并区域
+        loadMergedSequences(); // 加载合并后的序列列表
         showLoading(false);
     } catch (error) {
         console.error('加载设备失败:', error);
@@ -1872,9 +1873,19 @@ item.addEventListener('click', function(e) {
 container.appendChild(item);
     });
     
-    mergeSection.style.display = 'block';
+    const containerDiv = document.getElementById('mergeExecuteContainer');
+    if (containerDiv) {
+        containerDiv.style.display = 'grid';
+    }
 } else {
-    mergeSection.style.display = 'none';
+    const containerDiv = document.getElementById('mergeExecuteContainer');
+    if (containerDiv) {
+        // 只有在两个区域都没有数据时才隐藏
+        const mergedContainer = document.getElementById('mergedSequencesList');
+        if (!mergedContainer || mergedContainer.children.length === 0) {
+            containerDiv.style.display = 'none';
+        }
+    }
 }
     } catch (error) {
 console.error('加载全局序列列表失败:', error);
@@ -1899,22 +1910,6 @@ if (checkboxes.length === 2) {
     }
 }
 
-// 显示全局合并对话框
-function showGlobalMergeDialog() {
-    const checkboxes = document.querySelectorAll('.global-sequence-checkbox:checked');
-    if (checkboxes.length !== 2) {
-showNotification('请选择两个序列进行合并(一个左臂,一个右臂)', 'warning');
-return;
-    }
-    
-    const selectedNames = Array.from(checkboxes).map(cb => cb.value);
-    document.getElementById('selectedSequences').textContent = selectedNames.join(' + ');
-    document.getElementById('mergedSequenceName').value = '';
-    
-    window.selectedSequenceNames = selectedNames;
-    
-    document.getElementById('mergeSequenceModal').style.display = 'block';
-}
 
 // 关闭合并对话框
 function closeMergeDialog() {
@@ -1959,6 +1954,9 @@ if (result.success) {
     const checkboxes = document.querySelectorAll('.global-sequence-checkbox');
     checkboxes.forEach(cb => cb.checked = false);
     updateGlobalMergeButton();
+    
+    // 刷新合并序列列表
+    await loadMergedSequences();
 } else {
     showNotification(`合并失败: ${result.message}`, 'error');
 }
@@ -1966,6 +1964,137 @@ if (result.success) {
 console.error('合并序列失败:', error);
 showNotification('合并序列失败', 'error');
     }
+}
+
+// 加载合并后的序列列表
+async function loadMergedSequences() {
+    try {
+        const response = await fetch('/api/joint-sequences/merged/');
+        const result = await response.json();
+        
+        const container = document.getElementById('mergedSequencesList');
+        const containerDiv = document.getElementById('mergeExecuteContainer');
+        const executeBtn = document.getElementById('executeMergedBtn');
+        if (!container || !containerDiv) return;
+        
+        container.innerHTML = '';
+        
+        if (result.success && result.data && result.data.length > 0) {
+            result.data.forEach(file => {
+                const item = document.createElement('div');
+                item.className = 'global-sequence-item';
+                
+                const typeColor = file.type === 'up' ? '#28a745' : '#dc3545';
+                const typeText = file.type === 'up' ? 'UP' : 'DOWN';
+                
+                item.innerHTML = `
+                    <input type="checkbox" class="merged-sequence-checkbox" value="${file.filename}" 
+                           data-filename="${file.filename}"
+                           onchange="updateExecuteMergedButton()">
+                    <span class="global-sequence-type" style="color: ${typeColor}; font-weight: bold;">${typeText}</span>
+                    <span class="global-sequence-name" style="font-weight: bold;">${file.name}</span>
+                `;
+                
+                // 点击整个卡片也能切换复选框
+                item.addEventListener('click', function(e) {
+                    if (e.target.type !== 'checkbox') {
+                        const checkbox = this.querySelector('.merged-sequence-checkbox');
+                        if (checkbox) {
+                            checkbox.checked = !checkbox.checked;
+                            updateExecuteMergedButton();
+                        }
+                    }
+                });
+                
+                container.appendChild(item);
+            });
+            containerDiv.style.display = 'grid';
+            if (executeBtn) {
+                updateExecuteMergedButton();
+            }
+        } else {
+            container.innerHTML = '<p style="color: #999; font-size: 0.9em; text-align: center; grid-column: 1 / -1;">暂无合并序列</p>';
+            if (result.success) {
+                containerDiv.style.display = 'grid';
+            } else {
+                containerDiv.style.display = 'none';
+            }
+        }
+    } catch (error) {
+        console.error('加载合并序列失败:', error);
+        const containerDiv = document.getElementById('mergeExecuteContainer');
+        if (containerDiv) {
+            containerDiv.style.display = 'none';
+        }
+    }
+}
+
+// 更新执行合并序列按钮状态
+function updateExecuteMergedButton() {
+    const checkboxes = document.querySelectorAll('.merged-sequence-checkbox:checked');
+    const executeBtn = document.getElementById('executeMergedBtn');
+    
+    if (executeBtn) {
+        executeBtn.disabled = checkboxes.length === 0;
+    }
+}
+
+// 执行选中的合并序列
+async function executeSelectedMergedSequences() {
+    const checkboxes = document.querySelectorAll('.merged-sequence-checkbox:checked');
+    if (checkboxes.length === 0) {
+        showNotification('请先选择要执行的序列', 'warning');
+        return;
+    }
+    
+    const filenames = Array.from(checkboxes).map(cb => cb.dataset.filename);
+    
+    for (const filename of filenames) {
+        await executeMergedSequence(filename);
+        // 序列之间稍作延迟
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+}
+
+// 执行单个合并序列
+async function executeMergedSequence(filename) {
+    try {
+        const response = await fetch('/api/joint-sequences/execute-merged/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                file_name: filename
+            })
+        });
+        
+        const result = await response.json();
+        if (result.success) {
+            showNotification(`开始执行序列: ${filename}`, 'success');
+        } else {
+            showNotification(`执行失败: ${result.message}`, 'error');
+        }
+    } catch (error) {
+        console.error('执行合并序列失败:', error);
+        showNotification('执行序列失败', 'error');
+    }
+}
+
+// 显示合并对话框
+function showGlobalMergeDialog() {
+    const checkboxes = document.querySelectorAll('.global-sequence-checkbox:checked');
+    if (checkboxes.length !== 2) {
+        showNotification('请选择两个序列进行合并(一个左臂,一个右臂)', 'warning');
+        return;
+    }
+    
+    const selectedNames = Array.from(checkboxes).map(cb => cb.value);
+    document.getElementById('selectedSequences').textContent = selectedNames.join(' + ');
+    document.getElementById('mergedSequenceName').value = '';
+    
+    window.selectedSequenceNames = selectedNames;
+    document.getElementById('mergeSequenceModal').style.display = 'block';
 }
 
 // 点击模态框背景关闭对话框

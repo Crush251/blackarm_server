@@ -23,15 +23,29 @@
                 <!-- 设备面板将通过JavaScript动态生成 -->
             </div>
 
-            <!-- 全局序列合并区域 -->
-            <div class="global-merge-section" id="globalMergeSection" style="display: none;">
-                <h4>🔗 序列合并工具</h4>
-                <div class="all-sequences-list" id="allSequencesList">
-                    <!-- 所有序列将在这里显示 -->
+            <!-- 全局序列合并和执行区域 -->
+            <div class="merge-execute-container" style="display: none;" id="mergeExecuteContainer">
+                <!-- 序列合并工具 -->
+                <div class="global-merge-section" id="globalMergeSection">
+                    <h4>🔗 序列合并工具</h4>
+                    <div class="all-sequences-list" id="allSequencesList">
+                        <!-- 所有序列将在这里显示 -->
+                    </div>
+                    <button class="btn btn-warning" id="globalMergeBtn" onclick="showGlobalMergeDialog()" disabled style="width: 100%;">
+                        合并选中的序列
+                    </button>
                 </div>
-                <button class="btn btn-warning" id="globalMergeBtn" onclick="showGlobalMergeDialog()" disabled style="width: 100%;">
-                    合并选中的序列
-                </button>
+
+                <!-- 合并序列执行区域 -->
+                <div class="global-merge-section" id="mergedSequencesSection">
+                    <h4>▶️ 执行合并序列</h4>
+                    <div class="all-sequences-list" id="mergedSequencesList">
+                        <!-- 合并后的序列将在这里显示 -->
+                    </div>
+                    <button class="btn btn-primary" id="executeMergedBtn" onclick="executeSelectedMergedSequences()" disabled style="width: 100%;">
+                        执行选中的序列
+                    </button>
+                </div>
             </div>
 
             <div class="status-panel">
