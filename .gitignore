@@ -1,0 +1,30 @@
+# 忽略编译生成的二进制
+*.exe
+*.out
+*.o
+*.a
+# 忽略脚本文件
+*.sh
+# 忽略 Go 的构建输出
+/bin/
+/build/
+
+# 忽略系统文件
+.DS_Store
+Thumbs.db
+
+# 忽略日志和临时文件
+*.log
+*.tmp
+
+# 忽略 IDE 配置
+.vscode/
+.idea/
+.cursor/
+
+# 忽略某个文件夹
+exec/
+trsmusic/
+
+# 忽略单个文件
+

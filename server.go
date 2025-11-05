@@ -958,6 +958,9 @@ func (ws *WebServer) jointControlHandler(w http.ResponseWriter, r *http.Request)
 				ws.updateCurrentAngle(req.Interface, strconv.Itoa(joint.JointID), joint.Angle)
 			}
 		}
+	case "set_down_up_angles":
+		//支持启动我们保存的序列，前端勾选，将json传给后端启动
+		//按照json的left和right,分别并行执行
 
 	default:
 		response.Success = false
