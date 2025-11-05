@@ -1,0 +1,49 @@
+# 转义后的时间轴 JSON（由 Python 脚本生成）
+json_path: "trsmusic/waitansks.json"
+# 指法映射（note → left/right 指名数组）
+fingering_yaml: "config/sksFinger.yaml"
+# 节拍：四分音符为 1 拍；持续时间(秒)= 60/BPM * duration_beats
+bpm: 0
+# 本地 CAN 转发服务
+can_bridge_url: "http://localhost:5260"
+# 调试：true 时只打印帧，不发
+dry_run: false
+# 左/右手 CAN 接口与 ID
+hands:
+    left:
+        interface: can3
+        id: "0x28"
+    right:
+        interface: can0
+        id: "0x27"
+# 气泵
+pump:
+    use_serial: true
+    port_name: /dev/ttyUSB0
+qibenginterface: "can4"
+# 预备手势：开演前对左右手下发一帧"全释放姿态"（即 release_profile），等待 hold_ms 再开始
+ready:
+    enabled: true
+    hold_ms: 300
+# 防止手撞击杆的预动作
+handsleft: [255, 100, 255, 255, 255, 255]
+handsright: [0, 255, 255, 255, 255, 255]
+# 逐指"按压/松开"幅度（0~255），顺序：拇指, 拇指旋转, 食指, 中指, 无名指, 小指
+sks_left_press_profile: [141, 25, 255, 255, 255, 255] # 255 * 0.7 ≈ 178（你要求的按压值）
+sks_left_release_profile: [255, 255, 255, 255, 255, 255] # 你要求松开=255
+sks_right_press_profile: [171, 18, 222, 219, 215, 224] # 255 * 0.7 ≈ 178（你要求的按压值）
+sks_right_release_profile: [171, 18, 255, 255, 255, 255] # 你要求松开=255
+#默认中音
+sn_left_press_profile: [144, 12, 222, 227, 221, 255]
+sn_left_release_profile: [139, 12, 242, 247, 241, 255]
+#高音,修改默认中音左手的的前两位，对应Thumb2
+sn_left_high_Thumb: [119, 12, 222, 227, 221, 255]
+#倍高音，修改默认中音的前两位。对应Thumb1
+sn_left_high_pro_Thumb: [110, 43]
+sn_right_press_profile: [0, 255, 225, 208, 225, 255]
+sn_right_release_profile: [0, 255, 248, 234, 247, 255]
+arms:
+    can2:
+        device_name: left_black_arm
+    can1:
+        device_name: right_black_arm

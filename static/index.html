@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Black Arm 机械臂控制台</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Black Arm 机械臂控制台</h1>
+           
+        </div>
+
+        <div class="content">
+            <div class="loading" id="loading">
+                <div class="spinner"></div>
+                <p>正在加载设备信息...</p>
+            </div>
+
+            <div class="device-grid" id="deviceGrid" style="display: none;">
+                <!-- 设备面板将通过JavaScript动态生成 -->
+            </div>
+
+            <!-- 全局序列合并区域 -->
+            <div class="global-merge-section" id="globalMergeSection" style="display: none;">
+                <h4>🔗 序列合并工具</h4>
+                <div class="all-sequences-list" id="allSequencesList">
+                    <!-- 所有序列将在这里显示 -->
+                </div>
+                <button class="btn btn-warning" id="globalMergeBtn" onclick="showGlobalMergeDialog()" disabled style="width: 100%;">
+                    合并选中的序列
+                </button>
+            </div>
+
+            <div class="status-panel">
+                <h4>📊 系统状态</h4>
+                <div class="status-item">
+                    <span>连接状态</span>
+                    <div class="status-indicator" id="connectionStatus"></div>
+                </div>
+                <div class="status-item">
+                    <span>设备状态</span>
+                    <span id="currentInterface">未连接</span>
+                </div>
+                <div class="status-item">
+                    <span>电机数量</span>
+                    <span id="motorCount">0</span>
+                </div>
+                <div class="status-item">
+                    <span>最后更新</span>
+                    <span id="lastUpdate">-</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="notification" id="notification"></div>
+
+    <!-- 保存序列对话框 -->
+    <div class="modal" id="saveSequenceModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>保存角度序列</h3>
+            </div>
+            <div class="modal-body">
+                <input type="text" class="modal-input" id="sequenceName" placeholder="序列名称">
+                <div style="margin-top: 10px;">
+                    <label style="display: block; margin-bottom: 5px; font-size: 0.9em; font-weight: bold; color: #2c3e50;">
+                        机械臂型号：
+                    </label>
+                    <select id="saveArmModelSelector" class="modal-input" style="cursor: pointer;">
+                        <option value="old" selected>旧版机械臂 (old)</option>
+                        <option value="new">新版机械臂 (new)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn modal-btn-secondary" onclick="closeSaveSequenceDialog()">取消</button>
+                <button class="modal-btn modal-btn-primary" onclick="saveSequence()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 设置零点确认对话框 -->
+    <div class="modal" id="setZeroModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>⚠️ 设置零点确认</h3>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 10px; font-size: 0.9em; color: #666;">
+                    确定要设置零点吗？此操作不可逆！
+                </p>
+                <label style="display: block; margin-bottom: 5px; font-size: 0.85em; font-weight: bold; color: #2c3e50;">
+                    电机ID (留空=全部，单个: 51，多个: 51,52):
+                </label>
+                <input type="text" class="modal-input" id="setZeroMotorIDs" 
+                       placeholder="留空则为全部电机，例如: 51 或 51,52">
+                <p style="margin-top: 10px; font-size: 0.8em; color: #999;">
+                    💡 提示：不输入则为所有电机设置零点
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn modal-btn-secondary" onclick="closeSetZeroDialog()">取消</button>
+                <button class="modal-btn modal-btn-primary" onclick="confirmSetZero()">确定设置</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 合并序列对话框 -->
+    <div class="modal" id="mergeSequenceModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>合并序列</h3>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: 10px; font-size: 0.9em; color: #666;">
+                    已选择: <span id="selectedSequences" style="font-weight: bold; color: #667eea;"></span>
+                </p>
+                <input type="text" class="modal-input" id="mergedSequenceName" placeholder="输入合并后的序列名称">
+                <div style="margin-top: 10px;">
+                    <label style="display: block; margin-bottom: 5px; font-size: 0.9em; font-weight: bold; color: #2c3e50;">
+                        机械臂型号：
+                    </label>
+                    <select id="mergeArmModelSelector" class="modal-input" style="cursor: pointer;">
+                        <option value="old" selected>旧版机械臂 (old)</option>
+                        <option value="new">新版机械臂 (new)</option>
+                    </select>
+                </div>
+                <p style="margin-top: 10px; font-size: 0.8em; color: #999;">
+                    💡 提示：合并后的文件将保存在项目根目录下
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn modal-btn-secondary" onclick="closeMergeDialog()">取消</button>
+                <button class="modal-btn modal-btn-primary" onclick="mergeSequences()">合并</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
+
