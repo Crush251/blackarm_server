@@ -1754,6 +1754,10 @@ func (ws *WebServer) executeMergedSequenceHandler(w http.ResponseWriter, r *http
 		http.Error(w, fmt.Sprintf("解析序列文件失败: %v", err), http.StatusBadRequest)
 		return
 	}
+	fileName := strings.ToLower(req.FileName)
+	isUp := strings.Contains(fileName, "up")
+	isDown := strings.Contains(fileName, "down")
+	isSks := strings.Contains(fileName, "sks")
 
 	// 找到左右臂的控制器
 	var leftController, rightController *BlackArmController
@@ -1795,9 +1799,16 @@ func (ws *WebServer) executeMergedSequenceHandler(w http.ResponseWriter, r *http
 	}
 
 	// 异步执行左右臂序列
-	go ws.executeSequenceAsync(leftController, leftSeq)
-	go ws.executeSequenceAsync(rightController, rightSeq)
+	//go ws.executeSequenceAsync(leftController, leftSeq)
+	//go ws.executeSequenceAsync(rightController, rightSeq)
 
+	// 解析手部设备ID
+	leftDeviceID, rightDeviceID := getHandDeviceID(ws.config)
+	if isUp {
+		Sequp(ws.config, leftDeviceID, rightDeviceID, leftController, rightController, leftSeq, rightSeq, isUp, isDown, isSks)
+	} else if isDown {
+		Seqdown(ws.config, leftDeviceID, rightDeviceID, leftController, rightController, leftSeq, rightSeq, isUp, isDown, isSks)
+	}
 	response := ControlResponse{
 		Success: true,
 		Message: fmt.Sprintf("开始执行合并序列: %s", req.FileName),
@@ -1805,6 +1816,22 @@ func (ws *WebServer) executeMergedSequenceHandler(w http.ResponseWriter, r *http
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func getHandDeviceID(config *Config) (int, int) {
+	leftDeviceID := 40
+	rightDeviceID := 39
+	if strings.HasPrefix(config.Hands["left"].ID, "0x") {
+		if id, err := strconv.ParseInt(config.Hands["left"].ID[2:], 16, 32); err == nil {
+			leftDeviceID = int(id)
+		}
+	}
+	if strings.HasPrefix(config.Hands["right"].ID, "0x") {
+		if id, err := strconv.ParseInt(config.Hands["right"].ID[2:], 16, 32); err == nil {
+			rightDeviceID = int(id)
+		}
+	}
+	return leftDeviceID, rightDeviceID
 }
 
 // executeSequenceFromFile 从文件执行序列（命令行模式）
@@ -1866,104 +1893,117 @@ func executeSequenceFromFile(jsonFile string, config *Config) error {
 	isSks := strings.Contains(fileName, "sks")
 
 	// 解析手部设备ID
-	leftDeviceID := 40
-	rightDeviceID := 39
-	if strings.HasPrefix(config.Hands["left"].ID, "0x") {
-		if id, err := strconv.ParseInt(config.Hands["left"].ID[2:], 16, 32); err == nil {
-			leftDeviceID = int(id)
-		}
-	}
-	if strings.HasPrefix(config.Hands["right"].ID, "0x") {
-		if id, err := strconv.ParseInt(config.Hands["right"].ID[2:], 16, 32); err == nil {
-			rightDeviceID = int(id)
-		}
-	}
+	leftDeviceID, rightDeviceID := getHandDeviceID(config)
 
 	if isUp {
 		// UP序列执行策略
-		log.Println("执行UP序列策略")
-
-		// 1. 左右手分别执行防撞预动作
-		log.Println("发送左右手防撞预动作")
-		sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.HandsLeft)
-		sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.HandsRight)
-		time.Sleep(500 * time.Millisecond)
-
-		// 2. 清除错误
-		log.Println("清除左右臂错误")
-		leftController.CleanError()
-		rightController.CleanError()
-		time.Sleep(200 * time.Millisecond)
-
-		// 3. 使能
-		log.Println("使能左右臂")
-		leftController.EnableMotor("全部关节")
-		rightController.EnableMotor("全部关节")
-		time.Sleep(500 * time.Millisecond)
-
-		// 4. 速度设置为0.8
-		log.Println("设置左右臂速度为0.8")
-		speeds := []float32{0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8}
-		leftController.SetSpeeds(speeds)
-		rightController.SetSpeeds(speeds)
-		time.Sleep(200 * time.Millisecond)
-
-		// 5. 发送关节角度序列（每组之间等待1ms）
-		log.Println("执行关节角度序列")
-		executeSequenceDirect(leftController, leftSeq, 1*time.Millisecond)
-		executeSequenceDirect(rightController, rightSeq, 1*time.Millisecond)
-
-		// 6. 根据json名字发送release_profile
-		if isSks {
-			log.Println("发送SKS release_profile")
-			sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.SksLeftReleaseProfile)
-			sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.SksRightReleaseProfile)
-		} else {
-			log.Println("发送SN release_profile")
-			sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.SnLeftReleaseProfile)
-			sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.SnRightReleaseProfile)
-		}
+		Sequp(config, leftDeviceID, rightDeviceID, leftController, rightController, leftSeq, rightSeq, isUp, isDown, isSks)
 
 	} else if isDown {
 		// DOWN序列执行策略
-		log.Println("执行DOWN序列策略")
-
-		// 1. 手指执行防撞动作
-		log.Println("发送左右手防撞预动作")
-		sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.HandsLeft)
-		sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.HandsRight)
-		time.Sleep(500 * time.Millisecond)
-
-		// 2. 速度设为0.8
-		log.Println("设置左右臂速度为0.8")
-		speeds := []float32{0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8}
-		leftController.SetSpeeds(speeds)
-		rightController.SetSpeeds(speeds)
-		time.Sleep(200 * time.Millisecond)
-
-		// 3. 发送关节角度序列（每组之间等待1ms）
-		log.Println("执行关节角度序列")
-		executeSequenceDirect(leftController, leftSeq, 1*time.Millisecond)
-		executeSequenceDirect(rightController, rightSeq, 1*time.Millisecond)
-
-		// 4. 失能
-		log.Println("失能左右臂")
-		leftController.DisableMotor()
-		rightController.DisableMotor()
-		time.Sleep(200 * time.Millisecond)
-
-		// 5. 清除错误
-		log.Println("清除左右臂错误")
-		leftController.CleanError()
-		rightController.CleanError()
+		Seqdown(config, leftDeviceID, rightDeviceID, leftController, rightController, leftSeq, rightSeq, isUp, isDown, isSks)
 	}
 
 	log.Println("序列执行完成")
 	return nil
 }
 
+func Seqdown(config *Config, leftDeviceID int, rightDeviceID int, leftController *BlackArmController, rightController *BlackArmController, leftSeq *JointSequence, rightSeq *JointSequence, isUp bool, isDown bool, isSks bool) {
+	log.Println("执行DOWN序列策略")
+
+	// 1. 手指执行防撞动作
+	log.Println("发送左右手防撞预动作")
+	sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.HandsLeft)
+	sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.HandsRight)
+	//time.Sleep(500 * time.Millisecond)
+
+	// 2. 速度设为0.8
+	log.Println("设置左右臂速度为0.8")
+	speeds := []float32{0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8}
+	leftController.SetSpeeds(speeds)
+	rightController.SetSpeeds(speeds)
+	time.Sleep(200 * time.Millisecond)
+
+	// 3. 发送关节角度序列（每组之间等待1ms）
+	log.Println("执行关节角度序列")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go executeSequenceDirect(leftController, leftSeq, &wg)
+
+	wg.Add(1)
+	go executeSequenceDirect(rightController, rightSeq, &wg)
+	wg.Wait()
+	time.Sleep(500 * time.Millisecond) //每组之间等待500毫秒
+	// 4. 失能
+	log.Println("失能左右臂")
+	leftController.DisableMotor()
+	rightController.DisableMotor()
+	//time.Sleep(200 * time.Millisecond)
+
+	// 5. 清除错误
+	log.Println("清除左右臂错误")
+	leftController.CleanError()
+	rightController.CleanError()
+}
+
+func Sequp(config *Config, leftDeviceID int, rightDeviceID int, leftController *BlackArmController, rightController *BlackArmController, leftSeq *JointSequence, rightSeq *JointSequence, isUp bool, isDown bool, isSks bool) {
+	// 解析手部设备ID
+
+	log.Println("执行UP序列策略")
+
+	// 1. 左右手分别执行防撞预动作
+	log.Println("发送左右手防撞预动作")
+	sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.HandsLeft)
+	sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.HandsRight)
+	//time.Sleep(200 * time.Millisecond)
+
+	// 2. 清除错误
+	log.Println("清除左右臂错误")
+	leftController.CleanError()
+	rightController.CleanError()
+	//time.Sleep(100 * time.Millisecond)
+
+	// 3. 使能
+	log.Println("使能左右臂")
+	leftController.EnableMotor("全部关节")
+	rightController.EnableMotor("全部关节")
+	//time.Sleep(200 * time.Millisecond)
+
+	// 4. 速度设置为0.8
+	log.Println("设置左右臂速度为0.8")
+	speeds := []float32{0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8}
+	leftController.SetSpeeds(speeds)
+	rightController.SetSpeeds(speeds)
+	time.Sleep(200 * time.Millisecond)
+
+	// 5. 发送关节角度序列（每组之间等待1ms）
+	log.Println("执行关节角度序列")
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go executeSequenceDirect(leftController, leftSeq, &wg)
+	wg.Add(1)
+	go executeSequenceDirect(rightController, rightSeq, &wg)
+
+	wg.Wait()
+	log.Println("✅ 手臂序列执行完成。")
+
+	time.Sleep(1000 * time.Millisecond)
+	// 6. 根据json名字发送release_profile
+	if isSks {
+		log.Println("发送SKS release_profile")
+		sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.SksLeftReleaseProfile)
+		sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.SksRightReleaseProfile)
+	} else {
+		log.Println("发送SN release_profile")
+		sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.SnLeftReleaseProfile)
+		sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.SnRightReleaseProfile)
+	}
+}
+
 // executeSequenceDirect 直接执行序列（不使用goroutine）
-func executeSequenceDirect(controller *BlackArmController, sequence *JointSequence, delay time.Duration) {
+func executeSequenceDirect(controller *BlackArmController, sequence *JointSequence, wg *sync.WaitGroup) {
+	defer wg.Done()
 	for i, angleSet := range sequence.Angles {
 		log.Printf("执行第 %d 组角度: %s", i+1, angleSet.Name)
 
@@ -1980,10 +2020,7 @@ func executeSequenceDirect(controller *BlackArmController, sequence *JointSequen
 				log.Printf("设置电机 %d 角度失败: %v", motorID, err)
 			}
 		}
-
-		if delay > 0 {
-			time.Sleep(delay)
-		}
+		time.Sleep(500 * time.Millisecond) //每组之间等待500毫秒
 	}
 }
 
@@ -2012,7 +2049,7 @@ func sendHandCommandDirect(canBridgeURL, interfaceName string, deviceID int, val
 
 	canMessage := map[string]interface{}{
 		"interface": interfaceName,
-		"id":        deviceID,
+		"id":        uint32(deviceID),
 		"data":      data,
 	}
 

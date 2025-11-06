@@ -11,10 +11,10 @@ dry_run: false
 # 左/右手 CAN 接口与 ID
 hands:
     left:
-        interface: can3
+        interface: can0
         id: "0x28"
     right:
-        interface: can0
+        interface: can1
         id: "0x27"
 # 气泵
 pump:
@@ -45,5 +45,5 @@ sn_right_release_profile: [0, 255, 248, 234, 247, 255]
 arms:
     can2:
         device_name: left_black_arm
-    can1:
+    can3:
         device_name: right_black_arm
