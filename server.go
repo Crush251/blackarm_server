@@ -704,10 +704,10 @@ func (ws *WebServer) updateConfigHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		HandType string `json:"hand_type"`
-		Profile  string `json:"profile"`
-		Values   []int  `json:"values"`
-		Hand     string `json:"hand"` // "left" or "right"
+		HandType string `json:"hand_type"` // "sks" or "sn"
+		Profile  string `json:"profile"`   // "press" or "release" or "high_thumb" or "high_pro_thumb"
+		Values   []int  `json:"values"`    // 6个值，分别对应拇指、拇指旋转、食指、中指、无名指、小指
+		Hand     string `json:"hand"`      // "left" or "right"
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -784,7 +784,8 @@ func (ws *WebServer) updateExternalConfig(handType, profile string, values []int
 		releaseValues := make([]int, 6)
 		copy(releaseValues, values)
 
-		if handType == "sn" {
+		switch handType {
+		case "sn":
 			// SN: 食指(2)、中指(3)、无名指(4) +20
 			for i := 2; i <= 4; i++ {
 				if releaseValues[i]+20 > 255 {
@@ -793,7 +794,7 @@ func (ws *WebServer) updateExternalConfig(handType, profile string, values []int
 					releaseValues[i] += 20
 				}
 			}
-		} else if handType == "sks" {
+		case "sks":
 			// SKS: 食指(2)、中指(3)、无名指(4)、小指(5) +20
 			for i := 2; i <= 5; i++ {
 				if releaseValues[i]+20 > 255 {
@@ -802,6 +803,8 @@ func (ws *WebServer) updateExternalConfig(handType, profile string, values []int
 					releaseValues[i] += 20
 				}
 			}
+		default:
+			return fmt.Errorf("不支持的手部类型: %s", handType)
 		}
 
 		// 构建release配置键名
@@ -1818,6 +1821,7 @@ func (ws *WebServer) executeMergedSequenceHandler(w http.ResponseWriter, r *http
 	json.NewEncoder(w).Encode(response)
 }
 
+// getHandDeviceID 获取手部设备ID
 func getHandDeviceID(config *Config) (int, int) {
 	leftDeviceID := 40
 	rightDeviceID := 39
@@ -1908,6 +1912,7 @@ func executeSequenceFromFile(jsonFile string, config *Config) error {
 	return nil
 }
 
+// Seqdown 执行DOWN序列（一系列流程）
 func Seqdown(config *Config, leftDeviceID int, rightDeviceID int, leftController *BlackArmController, rightController *BlackArmController, leftSeq *JointSequence, rightSeq *JointSequence, isUp bool, isDown bool, isSks bool) {
 	log.Println("执行DOWN序列策略")
 
@@ -1946,6 +1951,7 @@ func Seqdown(config *Config, leftDeviceID int, rightDeviceID int, leftController
 	rightController.CleanError()
 }
 
+// Sequp 执行UP序列（一系列流程）
 func Sequp(config *Config, leftDeviceID int, rightDeviceID int, leftController *BlackArmController, rightController *BlackArmController, leftSeq *JointSequence, rightSeq *JointSequence, isUp bool, isDown bool, isSks bool) {
 	// 解析手部设备ID
 
@@ -2020,7 +2026,7 @@ func executeSequenceDirect(controller *BlackArmController, sequence *JointSequen
 				log.Printf("设置电机 %d 角度失败: %v", motorID, err)
 			}
 		}
-		time.Sleep(500 * time.Millisecond) //每组之间等待500毫秒
+		time.Sleep(1000 * time.Millisecond) //每组之间等待1000毫秒
 	}
 }
 
