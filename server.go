@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"embed"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/fs"
 	"io/ioutil"
@@ -41,6 +42,8 @@ type Config struct {
 	SnLeftHighProThumb     []int `yaml:"sn_left_high_pro_Thumb"`
 	SnRightPressProfile    []int `yaml:"sn_right_press_profile"`
 	SnRightReleaseProfile  []int `yaml:"sn_right_release_profile"`
+	HandsLeft              []int `yaml:"handsleft"`
+	HandsRight             []int `yaml:"handsright"`
 
 	// 关节角度序列配置 - 注意：序列不在主配置文件中，使用单独的JSON文件
 	JointSequences []JointSequence `yaml:"joint_sequences"`
@@ -305,6 +308,8 @@ func (ws *WebServer) Start(port int) error {
 	http.HandleFunc("/api/joint-sequences/temp/", ws.tempAngleHandler)
 	http.HandleFunc("/api/joint-sequences/execute/", ws.executeSequenceHandler)
 	http.HandleFunc("/api/joint-sequences/merge/", ws.mergeSequencesHandler)
+	http.HandleFunc("/api/joint-sequences/merged/", ws.listMergedSequencesHandler)
+	http.HandleFunc("/api/joint-sequences/execute-merged/", ws.executeMergedSequenceHandler)
 	http.HandleFunc("/api/current-angles/", ws.getCurrentAnglesHandler)
 
 	// 静态文件服务器 - 必须在最后注册，作为默认处理
@@ -699,10 +704,10 @@ func (ws *WebServer) updateConfigHandler(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		HandType string `json:"hand_type"`
-		Profile  string `json:"profile"`
-		Values   []int  `json:"values"`
-		Hand     string `json:"hand"` // "left" or "right"
+		HandType string `json:"hand_type"` // "sks" or "sn"
+		Profile  string `json:"profile"`   // "press" or "release" or "high_thumb" or "high_pro_thumb"
+		Values   []int  `json:"values"`    // 6个值，分别对应拇指、拇指旋转、食指、中指、无名指、小指
+		Hand     string `json:"hand"`      // "left" or "right"
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -771,6 +776,66 @@ func (ws *WebServer) updateExternalConfig(handType, profile string, values []int
 			log.Printf("警告: 更新目标目录YAML字段失败: %v", err2)
 		} else {
 			log.Printf("成功同步目标目录配置文件 %s: %s = %v", targetConfigPath, configKey, values)
+		}
+	}
+
+	// 如果是保存press类型，自动计算并保存release值
+	if profile == "press" && len(values) >= 6 {
+		releaseValues := make([]int, 6)
+		copy(releaseValues, values)
+
+		switch handType {
+		case "sn":
+			// SN: 食指(2)、中指(3)、无名指(4) +20
+			for i := 2; i <= 4; i++ {
+				if releaseValues[i]+20 > 255 {
+					releaseValues[i] = 255
+				} else {
+					releaseValues[i] += 20
+				}
+			}
+		case "sks":
+			// SKS: 食指(2)、中指(3)、无名指(4)、小指(5) +20
+			for i := 2; i <= 5; i++ {
+				if releaseValues[i]+20 > 255 {
+					releaseValues[i] = 255
+				} else {
+					releaseValues[i] += 20
+				}
+			}
+		default:
+			return fmt.Errorf("不支持的手部类型: %s", handType)
+		}
+
+		// 构建release配置键名
+		var releaseConfigKey string
+		switch {
+		case handType == "sks" && hand == "left":
+			releaseConfigKey = "sks_left_release_profile"
+		case handType == "sks" && hand == "right":
+			releaseConfigKey = "sks_right_release_profile"
+		case handType == "sn" && hand == "left":
+			releaseConfigKey = "sn_left_release_profile"
+		case handType == "sn" && hand == "right":
+			releaseConfigKey = "sn_right_release_profile"
+		}
+
+		if releaseConfigKey != "" {
+			// 更新release配置
+			err := ws.updateYAMLField(relConfigPath, releaseConfigKey, releaseValues)
+			if err != nil {
+				log.Printf("警告: 自动更新release配置失败: %v", err)
+			} else {
+				log.Printf("自动计算并保存release配置: %s = %v", releaseConfigKey, releaseValues)
+			}
+
+			// 同步到目标目录
+			if relConfigPath != targetConfigPath {
+				err2 := ws.updateYAMLField(targetConfigPath, releaseConfigKey, releaseValues)
+				if err2 != nil {
+					log.Printf("警告: 同步目标目录release配置失败: %v", err2)
+				}
+			}
 		}
 	}
 
@@ -1429,8 +1494,10 @@ func (ws *WebServer) mergeSequencesHandler(w http.ResponseWriter, r *http.Reques
 					response.Success = true
 					response.Message = fmt.Sprintf("成功生成序列: %s (UP) 和 %s (DOWN)", req.MergedName, downName)
 					response.Data = map[string]interface{}{
-						"up":   mergedSequences,
-						"down": mergedSequencesDown,
+						"up":        mergedSequences,
+						"down":      mergedSequencesDown,
+						"up_file":   req.MergedName + ".json",
+						"down_file": downName + ".json",
 					}
 				}
 			}
@@ -1583,8 +1650,459 @@ func (ws *WebServer) deleteJointSequence(sequenceName string) error {
 	return nil
 }
 
+// listMergedSequencesHandler 列出根目录下的合并序列文件
+func (ws *WebServer) listMergedSequencesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "只支持GET方法", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// 读取根目录下的所有JSON文件
+	files, err := ioutil.ReadDir(".")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("读取目录失败: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	var mergedFiles []map[string]interface{}
+	for _, file := range files {
+		if file.IsDir() || !strings.HasSuffix(file.Name(), ".json") {
+			continue
+		}
+
+		// 检查是否包含up或down关键字
+		fileName := strings.ToLower(file.Name())
+		if !strings.Contains(fileName, "up") && !strings.Contains(fileName, "down") {
+			continue
+		}
+
+		// 尝试读取文件内容，检查是否包含joint_sequences
+		data, err := ioutil.ReadFile(file.Name())
+		if err != nil {
+			continue
+		}
+
+		var fileData struct {
+			JointSequences []JointSequence `json:"joint_sequences"`
+		}
+		if err := json.Unmarshal(data, &fileData); err != nil {
+			continue
+		}
+
+		// 只包含包含左右臂的序列文件
+		if len(fileData.JointSequences) >= 2 {
+			hasLeft := false
+			hasRight := false
+			for _, seq := range fileData.JointSequences {
+				if seq.ArmType == "left" {
+					hasLeft = true
+				}
+				if seq.ArmType == "right" {
+					hasRight = true
+				}
+			}
+
+			if hasLeft && hasRight {
+				mergedFiles = append(mergedFiles, map[string]interface{}{
+					"filename": file.Name(),
+					"name":     strings.TrimSuffix(file.Name(), ".json"),
+					"type": func() string {
+						if strings.Contains(fileName, "up") {
+							return "up"
+						}
+						return "down"
+					}(),
+				})
+			}
+		}
+	}
+
+	response := ControlResponse{
+		Success: true,
+		Message: "获取合并序列列表成功",
+		Data:    mergedFiles,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// executeMergedSequenceHandler 执行合并序列
+func (ws *WebServer) executeMergedSequenceHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "只支持POST方法", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		FileName string `json:"file_name"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "解析请求失败", http.StatusBadRequest)
+		return
+	}
+
+	// 读取JSON文件
+	data, err := ioutil.ReadFile(req.FileName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("读取序列文件失败: %v", err), http.StatusNotFound)
+		return
+	}
+
+	var fileData struct {
+		JointSequences []JointSequence `json:"joint_sequences"`
+	}
+	if err := json.Unmarshal(data, &fileData); err != nil {
+		http.Error(w, fmt.Sprintf("解析序列文件失败: %v", err), http.StatusBadRequest)
+		return
+	}
+	fileName := strings.ToLower(req.FileName)
+	isUp := strings.Contains(fileName, "up")
+	isDown := strings.Contains(fileName, "down")
+	isSks := strings.Contains(fileName, "sks")
+
+	// 找到左右臂的控制器
+	var leftController, rightController *BlackArmController
+	//	leftInterface, rightInterface := "", ""
+
+	ws.mutex.RLock()
+	for _, controller := range ws.controllers {
+		motorIDs := controller.GetMotorIDs()
+		if len(motorIDs) > 0 && motorIDs[0] >= 61 && motorIDs[0] <= 67 {
+			leftController = controller
+			//		leftInterface = iface
+		}
+		if len(motorIDs) > 0 && motorIDs[0] >= 51 && motorIDs[0] <= 57 {
+			rightController = controller
+			//	rightInterface = iface
+		}
+	}
+	ws.mutex.RUnlock()
+
+	if leftController == nil || rightController == nil {
+		http.Error(w, "未找到左右臂控制器", http.StatusNotFound)
+		return
+	}
+
+	// 找到左右臂序列
+	var leftSeq, rightSeq *JointSequence
+	for i := range fileData.JointSequences {
+		if fileData.JointSequences[i].ArmType == "left" {
+			leftSeq = &fileData.JointSequences[i]
+		}
+		if fileData.JointSequences[i].ArmType == "right" {
+			rightSeq = &fileData.JointSequences[i]
+		}
+	}
+
+	if leftSeq == nil || rightSeq == nil {
+		http.Error(w, "序列文件中缺少左右臂数据", http.StatusBadRequest)
+		return
+	}
+
+	// 异步执行左右臂序列
+	//go ws.executeSequenceAsync(leftController, leftSeq)
+	//go ws.executeSequenceAsync(rightController, rightSeq)
+
+	// 解析手部设备ID
+	leftDeviceID, rightDeviceID := getHandDeviceID(ws.config)
+	if isUp {
+		Sequp(ws.config, leftDeviceID, rightDeviceID, leftController, rightController, leftSeq, rightSeq, isUp, isDown, isSks)
+	} else if isDown {
+		Seqdown(ws.config, leftDeviceID, rightDeviceID, leftController, rightController, leftSeq, rightSeq, isUp, isDown, isSks)
+	}
+	response := ControlResponse{
+		Success: true,
+		Message: fmt.Sprintf("开始执行合并序列: %s", req.FileName),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// getHandDeviceID 获取手部设备ID
+func getHandDeviceID(config *Config) (int, int) {
+	leftDeviceID := 40
+	rightDeviceID := 39
+	if strings.HasPrefix(config.Hands["left"].ID, "0x") {
+		if id, err := strconv.ParseInt(config.Hands["left"].ID[2:], 16, 32); err == nil {
+			leftDeviceID = int(id)
+		}
+	}
+	if strings.HasPrefix(config.Hands["right"].ID, "0x") {
+		if id, err := strconv.ParseInt(config.Hands["right"].ID[2:], 16, 32); err == nil {
+			rightDeviceID = int(id)
+		}
+	}
+	return leftDeviceID, rightDeviceID
+}
+
+// executeSequenceFromFile 从文件执行序列（命令行模式）
+func executeSequenceFromFile(jsonFile string, config *Config) error {
+	// 读取JSON文件
+	data, err := ioutil.ReadFile(jsonFile)
+	if err != nil {
+		return fmt.Errorf("读取序列文件失败: %v", err)
+	}
+
+	var fileData struct {
+		JointSequences []JointSequence `json:"joint_sequences"`
+	}
+	if err := json.Unmarshal(data, &fileData); err != nil {
+		return fmt.Errorf("解析序列文件失败: %v", err)
+	}
+
+	if len(fileData.JointSequences) < 2 {
+		return fmt.Errorf("序列文件必须包含左右臂数据")
+	}
+
+	// 找到左右臂序列
+	var leftSeq, rightSeq *JointSequence
+	for i := range fileData.JointSequences {
+		if fileData.JointSequences[i].ArmType == "left" {
+			leftSeq = &fileData.JointSequences[i]
+		}
+		if fileData.JointSequences[i].ArmType == "right" {
+			rightSeq = &fileData.JointSequences[i]
+		}
+	}
+
+	if leftSeq == nil || rightSeq == nil {
+		return fmt.Errorf("序列文件中缺少左右臂数据")
+	}
+
+	// 找到左右臂的接口
+	var leftInterface, rightInterface string
+	for iface, armConfig := range config.Arms {
+		if strings.Contains(armConfig.DeviceName, "left") {
+			leftInterface = iface
+		}
+		if strings.Contains(armConfig.DeviceName, "right") {
+			rightInterface = iface
+		}
+	}
+
+	if leftInterface == "" || rightInterface == "" {
+		return fmt.Errorf("未找到左右臂接口配置")
+	}
+
+	// 创建左右臂控制器
+	leftController := NewBlackArmController(config.CanBridgeURL, leftInterface, "left_black_arm")
+	rightController := NewBlackArmController(config.CanBridgeURL, rightInterface, "right_black_arm")
+
+	fileName := strings.ToLower(jsonFile)
+	isUp := strings.Contains(fileName, "up")
+	isDown := strings.Contains(fileName, "down")
+	isSks := strings.Contains(fileName, "sks")
+
+	// 解析手部设备ID
+	leftDeviceID, rightDeviceID := getHandDeviceID(config)
+
+	if isUp {
+		// UP序列执行策略
+		Sequp(config, leftDeviceID, rightDeviceID, leftController, rightController, leftSeq, rightSeq, isUp, isDown, isSks)
+
+	} else if isDown {
+		// DOWN序列执行策略
+		Seqdown(config, leftDeviceID, rightDeviceID, leftController, rightController, leftSeq, rightSeq, isUp, isDown, isSks)
+	}
+
+	log.Println("序列执行完成")
+	return nil
+}
+
+// Seqdown 执行DOWN序列（一系列流程）
+func Seqdown(config *Config, leftDeviceID int, rightDeviceID int, leftController *BlackArmController, rightController *BlackArmController, leftSeq *JointSequence, rightSeq *JointSequence, isUp bool, isDown bool, isSks bool) {
+	log.Println("执行DOWN序列策略")
+
+	// 1. 手指执行防撞动作
+	log.Println("发送左右手防撞预动作")
+	sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.HandsLeft)
+	sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.HandsRight)
+	//time.Sleep(500 * time.Millisecond)
+
+	// 2. 速度设为0.8
+	log.Println("设置左右臂速度为0.8")
+	speeds := []float32{0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8}
+	leftController.SetSpeeds(speeds)
+	rightController.SetSpeeds(speeds)
+	time.Sleep(200 * time.Millisecond)
+
+	// 3. 发送关节角度序列（每组之间等待1ms）
+	log.Println("执行关节角度序列")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go executeSequenceDirect(leftController, leftSeq, &wg)
+
+	wg.Add(1)
+	go executeSequenceDirect(rightController, rightSeq, &wg)
+	wg.Wait()
+	time.Sleep(500 * time.Millisecond) //每组之间等待500毫秒
+	// 4. 失能
+	log.Println("失能左右臂")
+	leftController.DisableMotor()
+	rightController.DisableMotor()
+	//time.Sleep(200 * time.Millisecond)
+
+	// 5. 清除错误
+	log.Println("清除左右臂错误")
+	leftController.CleanError()
+	rightController.CleanError()
+}
+
+// Sequp 执行UP序列（一系列流程）
+func Sequp(config *Config, leftDeviceID int, rightDeviceID int, leftController *BlackArmController, rightController *BlackArmController, leftSeq *JointSequence, rightSeq *JointSequence, isUp bool, isDown bool, isSks bool) {
+	// 解析手部设备ID
+
+	log.Println("执行UP序列策略")
+
+	// 1. 左右手分别执行防撞预动作
+	log.Println("发送左右手防撞预动作")
+	sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.HandsLeft)
+	sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.HandsRight)
+	//time.Sleep(200 * time.Millisecond)
+
+	// 2. 清除错误
+	log.Println("清除左右臂错误")
+	leftController.CleanError()
+	rightController.CleanError()
+	//time.Sleep(100 * time.Millisecond)
+
+	// 3. 使能
+	log.Println("使能左右臂")
+	leftController.EnableMotor("全部关节")
+	rightController.EnableMotor("全部关节")
+	//time.Sleep(200 * time.Millisecond)
+
+	// 4. 速度设置为0.8
+	log.Println("设置左右臂速度为0.8")
+	speeds := []float32{0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8}
+	leftController.SetSpeeds(speeds)
+	rightController.SetSpeeds(speeds)
+	time.Sleep(200 * time.Millisecond)
+
+	// 5. 发送关节角度序列（每组之间等待1ms）
+	log.Println("执行关节角度序列")
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go executeSequenceDirect(leftController, leftSeq, &wg)
+	wg.Add(1)
+	go executeSequenceDirect(rightController, rightSeq, &wg)
+
+	wg.Wait()
+	log.Println("✅ 手臂序列执行完成。")
+
+	time.Sleep(1000 * time.Millisecond)
+	// 6. 根据json名字发送release_profile
+	if isSks {
+		log.Println("发送SKS release_profile")
+		sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.SksLeftReleaseProfile)
+		sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.SksRightReleaseProfile)
+	} else {
+		log.Println("发送SN release_profile")
+		sendHandCommandDirect(config.CanBridgeURL, config.Hands["left"].Interface, leftDeviceID, config.SnLeftReleaseProfile)
+		sendHandCommandDirect(config.CanBridgeURL, config.Hands["right"].Interface, rightDeviceID, config.SnRightReleaseProfile)
+	}
+}
+
+// executeSequenceDirect 直接执行序列（不使用goroutine）
+func executeSequenceDirect(controller *BlackArmController, sequence *JointSequence, wg *sync.WaitGroup) {
+	defer wg.Done()
+	for i, angleSet := range sequence.Angles {
+		log.Printf("执行第 %d 组角度: %s", i+1, angleSet.Name)
+
+		// 设置每个关节的角度
+		for motorIDStr, angle := range angleSet.Values {
+			motorID, err := strconv.Atoi(motorIDStr)
+			if err != nil {
+				log.Printf("无效的电机ID: %s", motorIDStr)
+				continue
+			}
+
+			err = controller.SetAngle(motorID, angle)
+			if err != nil {
+				log.Printf("设置电机 %d 角度失败: %v", motorID, err)
+			}
+		}
+		time.Sleep(1000 * time.Millisecond) //每组之间等待1000毫秒
+	}
+}
+
+// sendHandCommandDirect 直接发送手部命令
+func sendHandCommandDirect(canBridgeURL, interfaceName string, deviceID int, values []int) error {
+	if len(values) < 6 {
+		return fmt.Errorf("手部数据长度不足")
+	}
+
+	hand := HandControl{
+		Thumb:       values[0],
+		ThumbRotate: values[1],
+		Index:       values[2],
+		Middle:      values[3],
+		Ring:        values[4],
+		Pinky:       values[5],
+	}
+
+	data := []byte{0x01}
+	data = append(data, byte(hand.Thumb))
+	data = append(data, byte(hand.ThumbRotate))
+	data = append(data, byte(hand.Index))
+	data = append(data, byte(hand.Middle))
+	data = append(data, byte(hand.Ring))
+	data = append(data, byte(hand.Pinky))
+
+	canMessage := map[string]interface{}{
+		"interface": interfaceName,
+		"id":        uint32(deviceID),
+		"data":      data,
+	}
+
+	jsonData, err := json.Marshal(canMessage)
+	if err != nil {
+		return fmt.Errorf("序列化CAN消息失败: %v", err)
+	}
+
+	resp, err := http.Post(canBridgeURL+"/api/can", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("发送CAN消息失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("CAN消息发送失败，状态码: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
 func main() {
-	// 创建Web服务器
+	// 解析命令行参数
+	jsonFile := flag.String("json", "", "要执行的JSON序列文件")
+	flag.Parse()
+
+	// 加载配置
+	configData, err := ioutil.ReadFile("config.yaml")
+	if err != nil {
+		log.Fatal("读取配置文件失败:", err)
+	}
+
+	var config Config
+	if err := yaml.Unmarshal(configData, &config); err != nil {
+		log.Fatal("解析配置文件失败:", err)
+	}
+
+	// 如果指定了JSON文件，执行序列
+	if *jsonFile != "" {
+		log.Printf("命令行模式: 执行序列文件 %s", *jsonFile)
+		if err := executeSequenceFromFile(*jsonFile, &config); err != nil {
+			log.Fatal("执行序列失败:", err)
+		}
+		return
+	}
+
+	// 否则启动Web服务器
 	server, err := NewWebServer("config.yaml")
 	if err != nil {
 		log.Fatal("创建Web服务器失败:", err)
